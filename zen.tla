@@ -66,11 +66,17 @@ VARIABLE discoState
     and cluster state version field (and make sure version is incremented...)
 *)
 VARIABLE publishedState \* used by disco module, persisted whenever updated
-VARIABLE appliedState \* state visible to the other modules in the cluster
+VARIABLE appliedState \* state visible to the other modules on the node
 
-VARIABLE committedStates \* map from publish id to {TRUE, FALSE} to determine if CS has already been successfully published or publishing already failed
+\* map from node id to next publishing id that the node should use for publishing,
+\* Allows to distinguish different publishing rounds on a per-node basis
+\* not reset on node restart/crash, it's more like a UUID generated for publishing requests
+VARIABLE nextPublishingId
 
-VARIABLE nextPublishingId \* map from node id to next publishing id that the node should use for publishing, Allows to distinguish different publishing rounds
+\* map from publish id to {TRUE, FALSE} to determine if CS has already been successfully published
+\* or publishing already failed
+VARIABLE committedStates
+
 
 
 (* random comments?
@@ -110,34 +116,36 @@ InitialClusterState(n) == [nodes   |-> {n},
                            data    |-> << >>]
 
 \* instead of the above, let's initially assume a cluster that is fully started with node 1 as master and all others as followers
-StartedInitialDiscoState == [n1 |-> Master] @@ [n \in (Nodes \ {"n1"}) |-> Follower]
-StartedInitialClusterState == [nodes   |-> Nodes,
-                        master  |-> CHOOSE i \in DOMAIN StartedInitialDiscoState :
-                                    StartedInitialDiscoState[i] = Master,
+StartedInitialDiscoState(nm) == [n \in {nm} |-> Master] @@ [n \in (Nodes \ {nm}) |-> Follower]
+StartedInitialClusterState(nm) == [nodes   |-> Nodes,
+                        master  |-> nm,
                         version |-> 1,
-                        data    |-> << >>]
+                        data    |-> << 7 >>] \* non-empty cluster state so that inconsistencies are triggered faster
 
-Init == /\ messages           = {}
+Init == \E nm \in Nodes :
+        /\ messages           = {}
         /\ nextClientValue    = 1
         /\ nextPublishingId   = [n \in Nodes |-> 1]
-        /\ publishedState     = [n \in Nodes |-> StartedInitialClusterState]
+        /\ publishedState     = [n \in Nodes |-> StartedInitialClusterState(nm)]
         /\ appliedState       = publishedState
-        /\ discoState         = StartedInitialDiscoState
+        /\ discoState         = StartedInitialDiscoState(nm)
         /\ committedStates    = [n \in Nodes |-> << >>]
 
 \* Send a ping from node n
 SendPingRequest(n) ==
   /\ discoState[n] = Candidate \* only send pings when in candidate mode
   /\ LET
+       \* send pings to all the nodes (except self), we can still decide later not to act on
+       \* some of the ping requests/responses
        pings == {([method  |-> Unicast,
                    request |-> TRUE,
                    source  |-> n,
-                   dest    |-> on]) : on \in (Nodes \ {n})} \* send pings to all the nodes, we can still decide later not to act on some of the responses
+                   dest    |-> on]) : on \in (Nodes \ {n})}
      IN
        /\ messages' = messages \cup pings
        /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, nextPublishingId, committedStates>>
 
-\* Node n receives ping request m
+\* Node n receives and responds to a ping request m
 HandlePingRequest(n, m) ==
   /\ m.method = Unicast
   /\ m.request = TRUE
@@ -168,7 +176,7 @@ FindMaster(pingResponses, self, selfVersion) ==
       ELSE
         \* ElectMaster(masterCandidates): take nodes with highest cluster state version: If same, chose by node id
         (CHOOSE m1 \in masterCandidates : \A m2 \in masterCandidates :
-          m1.version >= m2.version \/ (m1.version = m2.version /\ NodeOrder[m1.node] >= NodeOrder[m2.node])).node
+          m1.version > m2.version \/ (m1.version = m2.version /\ NodeOrder[m1.node] >= NodeOrder[m2.node])).node
     ELSE
       \* TieBreakActiveMasters(activeMasters): chose node by id
       CHOOSE n \in activeMasters : \A n2 \in activeMasters : NodeOrder[n] >= NodeOrder[n2]
@@ -285,7 +293,8 @@ HandlePublishRequest(n, m) ==
 CommitOrFailClusterState(n, m) ==
   /\ m.method = Publish
   /\ m.request = FALSE
-  /\ m.id \notin DOMAIN committedStates[n]
+  /\ m.id = nextPublishingId[n] - 1 \* only decide round if next round has not started yet
+  /\ m.id \notin DOMAIN committedStates[n] \* outcome not already decided for this round
   /\ LET
        publishResponses == { ms \in messages : ms.request = FALSE /\ ms.method = Publish /\ ms.dest = n /\ ms.id = m.id }
        successResponses == { pr \in publishResponses : pr.success }
@@ -295,7 +304,7 @@ CommitOrFailClusterState(n, m) ==
                             source  |-> n,
                             dest    |-> pr.source,
                             state   |-> pr.state] : pr \in publishResponses }
-       newState == IF publishedState[n].version >= m.state.version THEN publishedState[n] ELSE m.state
+       newState == IF discoState[n] = Master /\ publishedState[n].version >= m.state.version THEN publishedState[n] ELSE m.state
      IN
        \/ \* quorum of nodes accepted state
           /\ discoState[n] \in {Become_Master, Master}
@@ -312,7 +321,7 @@ CommitOrFailClusterState(n, m) ==
           /\ messages' = messages \ publishResponses
           /\ discoState' = [discoState EXCEPT ![n] = Candidate] \* step down as master
           /\ publishedState' = [publishedState EXCEPT ![n].master = Nil]
-          /\ appliedState' = [appliedState EXCEPT ![n] = publishedState'[n]]
+          /\ appliedState' = [appliedState EXCEPT ![n].master = Nil]
           /\ UNCHANGED <<nextClientValue, nextPublishingId>>
 
 \* commit or ignore publish response that has already been marked as committed or failed
@@ -341,8 +350,7 @@ HandleCommitRequest(n, m) ==
   /\ m.method = Commit
   /\ m.request = TRUE
   /\ discoState[n] = Follower
-  /\ publishedState[n] = m.state \* check that commit request is for the current publishedState
-  /\ appliedState' = [appliedState EXCEPT ![n] = m.state] \* apply state
+  /\ appliedState' = [appliedState EXCEPT ![n] = IF m.state.version > @.version THEN m.state ELSE @] \* apply state
   /\ messages' = messages \ {m}
   /\ UNCHANGED <<nextClientValue, nextPublishingId, publishedState, discoState, committedStates>>
 
@@ -389,6 +397,7 @@ MasterFaultDetectionKicksNodeOut(n) ==
 
 \* node fault detection on master node n kicks node nk out
 NodeFaultDetectionKicksNodeOut(n, nk) ==
+  /\ n /= nk
   /\ discoState[n] = Master
   /\ PreviousStateUpdateCompleted(n)
   /\ nk \in publishedState[n].nodes \* node to be kicked out is actually one of the known nodes
@@ -415,14 +424,13 @@ NodeFaultDetectionKicksNodeOut(n, nk) ==
          /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, committedStates>>
 
 \* restart node n
-\* assume at the moment that all state is dropped
+\* assume at the moment that all state is dropped except publishedState
 RestartNode(n) ==
   /\ discoState' = [discoState EXCEPT ![n] = Candidate]
-  /\ publishedState' = [publishedState EXCEPT ![n] = InitialClusterState(n)]
+  /\ publishedState' = [publishedState EXCEPT ![n] = [@ EXCEPT !.master = Nil, !.nodes = {n}]]
   /\ appliedState' = [appliedState EXCEPT ![n] = InitialClusterState(n)]
-  /\ committedStates' = [committedStates EXCEPT ![n] = << >>]
-  /\ nextPublishingId' = [nextPublishingId EXCEPT ![n] = 1]
-  /\ UNCHANGED <<nextClientValue, messages>>
+  /\ committedStates' = [committedStates EXCEPT ![n] = [i \in 1..(nextPublishingId[n]-1) |-> FALSE]]
+  /\ UNCHANGED <<nextClientValue, messages, nextPublishingId>>
 
 \* next-step relation
 Next ==
@@ -440,7 +448,7 @@ Next ==
   \/ \E n \in Nodes : PublishClientRequest(n)
   \/ \E n \in Nodes : MasterFaultDetectionKicksNodeOut(n)
   \/ \E n1, n2 \in Nodes : NodeFaultDetectionKicksNodeOut(n1, n2)
-  \* \/ \E n \in Nodes : RestartNode(n)
+  \/ \E n \in Nodes : RestartNode(n)
 
 ----
 
@@ -457,11 +465,7 @@ PrefixOf(seq1, seq2) ==
     len1 == Len(seq1)
     len2 == Len(seq2)
   IN
-    IF len1 <= len2
-    THEN
-      seq1 = SubSeq(seq2, 1, len1)
-    ELSE
-      FALSE
+    len1 <= len2 /\ seq1 = SubSeq(seq2, 1, len1)
 
 \* main invariant:
 \* if node n1 has an applied cluster state with version v1 and node n2 has an applied cluster state with version v2:
