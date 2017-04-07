@@ -53,7 +53,6 @@ VARIABLE discoState
 *)
 VARIABLE publishedState \* used by disco module, persisted whenever updated
 VARIABLE term \* used by disco module, persisted
-VARIABLE votedFor \* used by disco module, persisted
 VARIABLE appliedState \* state visible to the other modules on the node
 
 ----
@@ -85,7 +84,6 @@ Init == /\ messages           = {}
         /\ appliedState       = publishedState
         /\ discoState         = InitialDiscoState
         /\ term               = [n \in Nodes |-> 0]
-        /\ votedFor           = [n \in Nodes |-> Nil]
 
 SendPingRequest(n) ==
   /\ discoState[n] = Pinging \* only send pings when in Pinging mode
@@ -99,7 +97,7 @@ SendPingRequest(n) ==
                    term    |-> term[n]]) : on \in (Nodes \ {n})} \* add term so that we can disrupt a master/follower with a lower term
      IN
        /\ messages' = messages \cup pings
-       /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState, votedFor>>
+       /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState>>
 
 HandlePingRequest(n, m) ==
   /\ m.method = Unicast
@@ -108,9 +106,8 @@ HandlePingRequest(n, m) ==
      THEN
        /\ term' = [term EXCEPT ![n] = m.term]
        /\ discoState' = [discoState EXCEPT ![n] = Pinging] \* revert to Pinging state (maybe we could just do this here if we are Master or Follower, but not when Become_Master or Become_Follower)
-       /\ votedFor' = [votedFor EXCEPT ![n] = Nil]
      ELSE
-       UNCHANGED <<term, discoState, votedFor>>
+       UNCHANGED <<term, discoState>>
   /\ LET
        \* use primed variables of discoState and term as they might have been modified by the conjunction above
        response == [method  |-> Unicast,
@@ -151,11 +148,11 @@ HandlePingResponses(n) ==
                            term    |-> 0] \* this join request only works if the node is already master and does not constitute a vote
          IN
            /\ messages' = (messages \ pingResponses) \cup { joinRequest }
-           /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState, votedFor>> \* no voting necessary to join an existing master
+           /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState>> \* no voting necessary to join an existing master
        ELSE
          IF Cardinality({pr.source : pr \in masterCandidates}) < MinMasterNodes \* masterCandidates contains self
          THEN
-           UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState, votedFor, messages>> \* noop
+           UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState, messages>> \* noop
          ELSE
            LET
              \* choose the node with the best cluster state
@@ -170,7 +167,6 @@ HandlePingResponses(n) ==
                              term    |-> nextTerm]
            IN
              /\ term' = [term EXCEPT ![n] = nextTerm]
-             /\ votedFor' = [votedFor EXCEPT ![n] = bestCSNode]
              /\ discoState' = [discoState EXCEPT ![n] = IF bestCSNode = n THEN Become_Master ELSE Become_Follower]
              /\ messages' = (messages \ pingResponses) \cup (IF bestCSNode = n THEN {} ELSE { joinRequest })
              /\ UNCHANGED <<nextClientValue, publishedState, appliedState>>
@@ -194,7 +190,7 @@ HandleJoinRequestsToBecomeMaster(n) ==
        /\ publishedState' = [publishedState EXCEPT ![n] = newState]
        /\ nextClientValue' = nextClientValue + 1
        /\ messages' = (messages \ sameTermJoins) \cup publishRequests
-       /\ UNCHANGED <<appliedState, term, votedFor>>
+       /\ UNCHANGED <<appliedState, term>>
 
 \* node n is master and lets another node join
 HandleJoinRequestWhenMaster(n) ==
@@ -213,7 +209,7 @@ HandleJoinRequestWhenMaster(n) ==
        /\ publishedState' = [publishedState EXCEPT ![n] = newState]
        /\ nextClientValue' = nextClientValue + 1
        /\ messages' = (messages \ joinRequests) \cup publishRequests
-       /\ UNCHANGED <<appliedState, discoState, term, votedFor>>
+       /\ UNCHANGED <<appliedState, discoState, term>>
 
 \* node n (which is master) instructs other nodes to apply CS
 CommitState(n) ==
@@ -234,7 +230,7 @@ CommitState(n) ==
     /\ Cardinality(successResponses) + 1 >= MinMasterNodes \* +1 as we don't send publish request to ourselves
     /\ messages' = (messages \ publishResponses) \cup applyRequests
     /\ appliedState' = [appliedState EXCEPT ![n] = publishedState[n]]
-    /\ UNCHANGED <<nextClientValue, discoState, publishedState, term, votedFor>>
+    /\ UNCHANGED <<nextClientValue, discoState, publishedState, term>>
 
 
 ClientRequest(n) ==
@@ -252,7 +248,7 @@ ClientRequest(n) ==
        /\ nextClientValue' = nextClientValue + 1
        /\ publishedState' = [publishedState EXCEPT ![n] = newState]
        /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<appliedState, discoState, term, votedFor>>
+       /\ UNCHANGED <<appliedState, discoState, term>>
 
 
 HandleAppendEntriesRequest(n, m) ==
@@ -262,14 +258,13 @@ HandleAppendEntriesRequest(n, m) ==
      THEN
        /\ term' = [term EXCEPT ![n] = m.term]
        /\ discoState' = [discoState EXCEPT ![n] = Follower]
-       /\ votedFor' = [votedFor EXCEPT ![n] = Nil]
      ELSE
        IF m.term = term[n] /\ discoState[n] \in {Pinging, Become_Master, Become_Follower} /\ Assert(discoState[n] /= Master, "two masters for same term")
        THEN
          /\ discoState' = [discoState EXCEPT ![n] = Follower]
-         /\ UNCHANGED <<term, votedFor>>
+         /\ UNCHANGED <<term>>
        ELSE
-         UNCHANGED <<term, discoState, votedFor>>
+         UNCHANGED <<term, discoState>>
   /\ LET
        betterCS == \/ m.state.term > publishedState[n].term
                    \/ /\ m.state.term = publishedState[n].term
@@ -302,24 +297,24 @@ HandleApplyRequest(n, m) ==
   /\ appliedState' = [appliedState EXCEPT ![n] = IF m.state.version > @.version THEN m.state ELSE @]
   /\ Assert(m.state.version > appliedState[n].version => m.state.term >= appliedState[n].term, "seen committed CS with higher version but lower term")
   /\ messages' = messages \ {m}
-  /\ UNCHANGED <<publishedState, nextClientValue, votedFor, discoState, term>>
+  /\ UNCHANGED <<publishedState, nextClientValue, discoState, term>>
 
 \* time out and go back to pinging (e.g. node/master fault detection kicks in or waiting on ping responses / append entries responses times out)
 Timeout(n) ==
   /\ discoState' = [discoState EXCEPT ![n] = Pinging]
-  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, messages, term, votedFor>>
+  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, messages, term>>
 
 \* drop request
 DropRequest(m) ==
   /\ m.request = TRUE
   /\ messages' = messages \ {m}
-  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term, votedFor>>
+  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term>>
 
 \* drop response
 DropResponse(m) ==
   /\ m.request = FALSE
   /\ messages' = messages \ {m}
-  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term, votedFor>>
+  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term>>
 
 \* handle response with higher term than we currently have
 HandleResponseWithHigherTerm(n, m) ==
@@ -329,7 +324,6 @@ HandleResponseWithHigherTerm(n, m) ==
   /\ messages' = messages \ {m}
   /\ term' = [term EXCEPT ![n] = m.term]
   /\ discoState' = [discoState EXCEPT ![n] = Pinging] \* revert to Pinging state
-  /\ votedFor' = [votedFor EXCEPT ![n] = Nil]
   /\ UNCHANGED <<nextClientValue, publishedState, appliedState>>
 
 \* crash/restart node n (loses ephemeral state)
@@ -337,7 +331,7 @@ RestartNode(n) ==
   /\ discoState' = [discoState EXCEPT ![n] = Pinging]
   /\ publishedState' = [publishedState EXCEPT ![n] = [@ EXCEPT !.master = Nil, !.nodes = {n}]]
   /\ appliedState' = [appliedState EXCEPT ![n] = InitialClusterState(n)]
-  /\ UNCHANGED <<nextClientValue, messages, term, votedFor>>
+  /\ UNCHANGED <<nextClientValue, messages, term>>
 
 \* next-step relation
 Next ==
