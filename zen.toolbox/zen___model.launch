@@ -7,6 +7,7 @@
 <booleanAttribute key="dfidMode" value="false"/>
 <intAttribute key="distributedFPSetCount" value="0"/>
 <stringAttribute key="distributedNetworkInterface" value="192.168.178.34"/>
+<intAttribute key="distributedNodesCount" value="1"/>
 <stringAttribute key="distributedTLC" value="off"/>
 <stringAttribute key="distributedTLCVMArgs" value=""/>
 <intAttribute key="fpBits" value="0"/>
@@ -25,6 +26,7 @@
 <listEntry value="1StateMachineSafety"/>
 <listEntry value="1OneMasterPerTerm"/>
 <listEntry value="1LogMatching"/>
+<listEntry value="1NodeTermIsHigherThanCSTerm"/>
 </listAttribute>
 <listAttribute key="modelCorrectnessProperties"/>
 <stringAttribute key="modelExpressionEval" value=""/>
@@ -42,7 +44,7 @@
 <listEntry value="Unicast;;Unicast;1;0"/>
 <listEntry value="Become_Follower;;Become_Follower;1;0"/>
 </listAttribute>
-<stringAttribute key="modelParameterContraint" value="nextClientValue &lt;= 4 /\ \A n \in Nodes: term[n] &lt;= 4"/>
+<stringAttribute key="modelParameterContraint" value="StateConstraint"/>
 <listAttribute key="modelParameterDefinitions"/>
 <stringAttribute key="modelParameterModelValues" value="{}"/>
 <stringAttribute key="modelParameterNewDefinitions" value=""/>
