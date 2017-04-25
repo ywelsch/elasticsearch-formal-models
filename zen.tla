@@ -57,9 +57,6 @@ VARIABLE appliedState \* state visible to the other modules on the node
 
 ----
 
-\* Return the minimum value from a set, or undefined if the set is empty.
-Min(s) == CHOOSE x \in s : \A y \in s : x <= y
-
 \* Return the maximum value from a set, or undefined if the set is empty.
 Max(s) == CHOOSE x \in s : \A y \in s : x >= y 
 
@@ -138,38 +135,42 @@ HandlePingResponses(n) ==
      IN
        IF Cardinality(activeMastersWithAcceptableTerm) > 0
        THEN
-         LET
-           masterToJoin == CHOOSE pr \in activeMastersWithAcceptableTerm : TRUE \* just chose any of them (alt. chose the one with the best term, state)
-           \* send join request to master, but stay in Pinging mode (as current term is not speculative and no voting is happening)
-           joinRequest == [method  |-> Join,
-                           request |-> TRUE,
-                           source  |-> n,
-                           dest    |-> masterToJoin.master,
-                           term    |-> 0] \* this join request only works if the node is already master and does not constitute a vote
-         IN
-           /\ messages' = (messages \ pingResponses) \cup { joinRequest }
-           /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState>> \* no voting necessary to join an existing master
+         \E masterToJoin \in activeMastersWithAcceptableTerm:
+           LET
+             \* send join request to master, but stay in Pinging mode (as current term is not speculative and no voting is happening)
+             joinRequest == [method  |-> Join,
+                             request |-> TRUE,
+                             source  |-> n,
+                             dest    |-> masterToJoin.master,
+                             term    |-> 0] \* this join request only works if the node is already master and does not constitute a vote
+           IN
+             /\ messages' = (messages \ pingResponses) \cup { joinRequest }
+             /\ UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState>> \* no voting necessary to join an existing master
        ELSE
          IF Cardinality({pr.source : pr \in masterCandidates}) < MinMasterNodes \* masterCandidates contains self
          THEN
            UNCHANGED <<nextClientValue, publishedState, appliedState, term, discoState, messages>> \* noop
          ELSE
-           LET
-             \* choose the node with the best cluster state
-             bestCSNode == (CHOOSE pr \in masterCandidates : \A pr2 \in masterCandidates :
-               pr.csTerm > pr2.csTerm \/ (pr.csTerm = pr2.csTerm /\ pr.version >= pr2.version)).source
-             \* choose highest term seen + 1. If node is becoming master or follower, it already has a speculative term
-             nextTerm == Max({ IF pr.discoSt \in {Become_Master, Become_Follower} THEN pr.term ELSE pr.term + 1 : pr \in masterCandidates })
-             joinRequest == [method  |-> Join,
-                             request |-> TRUE,
-                             source  |-> n,
-                             dest    |-> bestCSNode,
-                             term    |-> nextTerm]
-           IN
-             /\ term' = [term EXCEPT ![n] = nextTerm]
-             /\ discoState' = [discoState EXCEPT ![n] = IF bestCSNode = n THEN Become_Master ELSE Become_Follower]
-             /\ messages' = (messages \ pingResponses) \cup (IF bestCSNode = n THEN {} ELSE { joinRequest })
-             /\ UNCHANGED <<nextClientValue, publishedState, appliedState>>
+           \E bestCSCandidate \in masterCandidates :
+             \A otherCandidate \in masterCandidates : 
+               /\ \/ bestCSCandidate.csTerm > bestCSCandidate.csTerm 
+                  \/ /\ bestCSCandidate.csTerm = otherCandidate.csTerm
+                     /\ bestCSCandidate.version >= otherCandidate.version
+               /\ LET
+                    \* choose the node with the best cluster state
+                    bestCSNode == bestCSCandidate.source
+                    \* choose highest term seen + 1. If node is becoming master or follower, it already has a speculative term
+                    nextTerm == Max({ IF pr.discoSt \in {Become_Master, Become_Follower} THEN pr.term ELSE pr.term + 1 : pr \in masterCandidates })
+                    joinRequest == [method  |-> Join,
+                                    request |-> TRUE,
+                                    source  |-> n,
+                                    dest    |-> bestCSNode,
+                                    term    |-> nextTerm]
+                  IN
+                    /\ term' = [term EXCEPT ![n] = nextTerm]
+                    /\ discoState' = [discoState EXCEPT ![n] = IF bestCSNode = n THEN Become_Master ELSE Become_Follower]
+                    /\ messages' = (messages \ pingResponses) \cup (IF bestCSNode = n THEN {} ELSE { joinRequest })
+                    /\ UNCHANGED <<nextClientValue, publishedState, appliedState>>
 
 \* node n wants to become master and checks if it has received enough joins (= votes) for its prospective term
 HandleJoinRequestsToBecomeMaster(n) ==
@@ -316,6 +317,10 @@ DropResponse(m) ==
   /\ messages' = messages \ {m}
   /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term>>
 
+DropMessagesExcept(sm) ==
+  /\ messages' = sm
+  /\ UNCHANGED <<nextClientValue, publishedState, appliedState, discoState, term>>
+
 \* handle response with higher term than we currently have
 HandleResponseWithHigherTerm(n, m) ==
   /\ m.request = FALSE
@@ -348,6 +353,7 @@ Next ==
   \/ \E m \in messages : HandleResponseWithHigherTerm(m.dest, m)
   \/ \E m \in messages : DropRequest(m)
   \/ \E m \in messages : DropResponse(m)
+  \* \/ \E sm \in SUBSET messages: DropMessagesExcept(sm)
   \/ \E n \in Nodes : RestartNode(n)
 
 ----
@@ -391,6 +397,7 @@ NodeTermIsHigherThanCSTerm ==
 StateConstraint ==
   /\ nextClientValue <= 4
   /\ \A n \in Nodes: term[n] <= 4
-  /\ Cardinality({ m \in messages : m.method = Unicast}) <= 5
+  /\ Cardinality(messages) <= 6
+  /\ Cardinality({ m \in messages : m.method = Unicast}) <= 4
 
 ====================================================================================================
