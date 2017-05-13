@@ -99,7 +99,7 @@ SendPingRequest(n) ==
 HandlePingRequest(n, m) ==
   /\ m.method = Unicast
   /\ m.request = TRUE
-  /\ IF m.term > term[n]
+  /\ IF discoState /= Pinging /\ m.term > term[n]
      THEN
        /\ term' = [term EXCEPT ![n] = m.term]
        /\ discoState' = [discoState EXCEPT ![n] = Pinging] \* revert to Pinging state (maybe we could just do this here if we are Master or Follower, but not when Become_Master or Become_Follower)
@@ -396,8 +396,8 @@ NodeTermIsHigherThanCSTerm ==
 \* State-exploration limits
 StateConstraint ==
   /\ nextClientValue <= 4
-  /\ \A n \in Nodes: term[n] <= 4
-  /\ Cardinality(messages) <= 6
-  /\ Cardinality({ m \in messages : m.method = Unicast}) <= 4
+  /\ \A n \in Nodes: term[n] <= 3
+  /\ Cardinality(messages) <= 4
+  /\ Cardinality({ m \in messages : m.method = Unicast}) <= 3
 
 ====================================================================================================
