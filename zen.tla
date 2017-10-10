@@ -69,8 +69,8 @@ Max(s) == CHOOSE x \in s : \A y \in s : x >= y
 \* Remove request from the set of messages and add response instead
 Reply(response, request) == messages' = {response} \cup (messages \ {request})
 
-\* minimum_master_nodes configured to majority of nodes
-MinMasterNodes == (Cardinality(Nodes) \div 2) + 1
+\* quorums correspond to majority of nodes
+Quorum == {ns \in SUBSET(Nodes) : Cardinality(ns) * 2 > Cardinality(Nodes)}
 
 \* initial cluster state for node n
 InitialClusterState(n) == [nodes   |-> {n},
@@ -151,7 +151,7 @@ HandlePingResponses(n) ==
              /\ messages' = (messages \ pingResponses) \cup { joinRequest }
              /\ UNCHANGED <<nextUUID, discoState, appliedState, term, discoPhase>> \* no voting necessary to join an existing master
        ELSE
-         IF Cardinality({pr.source : pr \in masterCandidates}) < MinMasterNodes \* masterCandidates contains self
+         IF {pr.source : pr \in masterCandidates} \notin Quorum \* masterCandidates contains self
          THEN
            UNCHANGED <<nextUUID, discoState, appliedState, term, discoPhase, messages>> \* noop
          ELSE
@@ -172,6 +172,8 @@ HandlePingResponses(n) ==
                                     term    |-> nextTerm]
                   IN
                     /\ term' = [term EXCEPT ![n] = nextTerm]
+                    /\ Assert(term'[n] > term[n], "term increases when voting") \* each node only casts a single vote per term
+                    \* as we are also part of masterCandidates, vote is only cast for a node with a better CS
                     /\ discoPhase' = [discoPhase EXCEPT ![n] = IF bestCSNode = n THEN Become_Master ELSE Become_Follower]
                     /\ messages' = (messages \ pingResponses) \cup (IF bestCSNode = n THEN {} ELSE { joinRequest })
                     /\ UNCHANGED <<nextUUID, discoState, appliedState>>
@@ -190,7 +192,7 @@ HandleJoinRequestsToBecomeMaster(n) ==
                              term    |-> term[n],
                              state   |-> newState] : ns \in (newState.nodes \ {n}) }
      IN
-       /\ Cardinality(voteGrantingNodes) + 1 >= MinMasterNodes \* +1 as we don't send a join request to ourselves
+       /\ voteGrantingNodes \cup {n} \in Quorum \* +1 as we don't send a join request to ourselves
        /\ discoPhase' = [discoPhase EXCEPT ![n] = Master]
        /\ discoState' = [discoState EXCEPT ![n] = newState]
        /\ nextUUID' = nextUUID + 1
@@ -226,13 +228,14 @@ CommitState(n) ==
                             /\ m.term = term[n] \* can only commit stuff from my term
                             /\ m.version = discoState[n].version }
     successResponses == { pr \in publishResponses : pr.success }
+    successNodes == { pr.source : pr \in successResponses }
     applyRequests == { [method  |-> Apply,
                         request |-> TRUE,
                         source  |-> n,
                         dest    |-> ns,
                         state   |-> discoState[n]] : ns \in (discoState[n].nodes \ {n}) }
   IN
-    /\ Cardinality(successResponses) + 1 >= MinMasterNodes \* +1 as we don't send publish request to ourselves
+    /\ (successNodes \cup {n}) \in Quorum \* +1 as we don't send publish request to ourselves
     /\ messages' = (messages \ publishResponses) \cup applyRequests
     /\ appliedState' = [appliedState EXCEPT ![n] = discoState[n]]
     /\ UNCHANGED <<nextUUID, discoPhase, discoState, term>>
