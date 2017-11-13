@@ -90,22 +90,22 @@ InitialClusterStateWithMaster(n, m, vs) == [nodes   |-> {n},
                                             data    |-> << 0 >>,
                                             voters  |-> vs]
 
-(*
+
 Init == /\ messages       = {}
         /\ nextUUID       = 1
         /\ discoState     \in {[n \in Nodes |-> InitialClusterState(n, IF nm = n THEN {nm} ELSE {})] : nm \in Nodes}
         /\ appliedState   = discoState
         /\ discoPhase     = [n \in Nodes |-> Pinging]
         /\ term           = [n \in Nodes |-> 0]
-*)
 
+(*
 Init == /\ messages       = {}
         /\ nextUUID       = 1
         /\ discoState     \in {[n \in Nodes |-> InitialClusterStateWithMaster(n, m, {m})] : m \in Nodes}
         /\ appliedState   = discoState
         /\ discoPhase     = [n \in Nodes |-> IF discoState[n].master = n THEN Master ELSE Follower]
         /\ term           = [n \in Nodes |-> 1]
-
+*)
 
 SendPingRequest(n, ns) ==
   /\ discoPhase[n] = Pinging \* only send pings when in Pinging mode
@@ -167,12 +167,14 @@ HandlePingResponses(n) ==
                              request |-> TRUE,
                              source  |-> n,
                              dest    |-> masterToJoin.master,
-                             term    |-> 0] \* this join request only works if the node is already master and does not constitute a vote
+                             term    |-> 0,
+                             csTerm  |-> discoState[n].term,
+                             version |-> discoState[n].version] \* this join request only works if the node is already master and does not constitute a vote
            IN
              /\ messages' = (messages \ pingResponses) \cup { joinRequest }
              /\ UNCHANGED <<nextUUID, discoState, appliedState, term, discoPhase>> \* no voting necessary to join an existing master
        ELSE
-         IF \lnot IsQuorum({pr.source : pr \in masterCandidates}, discoState[n].voters) \* masterCandidates contains self
+         IF \lnot IsQuorum({pr.source : pr \in masterCandidates}, appliedState[n].voters) \* masterCandidates contains self
          THEN
            UNCHANGED <<nextUUID, discoState, appliedState, term, discoPhase, messages>> \* noop
          ELSE
@@ -190,7 +192,9 @@ HandlePingResponses(n) ==
                                     request |-> TRUE,
                                     source  |-> n,
                                     dest    |-> bestCSNode,
-                                    term    |-> nextTerm]
+                                    term    |-> nextTerm,
+                                    csTerm  |-> discoState[n].term,
+                                    version |-> discoState[n].version]
                   IN
                     /\ term' = [term EXCEPT ![n] = nextTerm]
                     /\ Assert(term'[n] > term[n], "term increases when voting") \* each node only casts a single vote per term
@@ -199,11 +203,28 @@ HandlePingResponses(n) ==
                     /\ messages' = (messages \ pingResponses) \cup (IF bestCSNode = n THEN {} ELSE { joinRequest })
                     /\ UNCHANGED <<nextUUID, discoState, appliedState>>
 
+\* Send join request from node n to nm for term t                      
+SendJoinRequest(n, nm, t) ==
+  /\ discoPhase[n] = Pinging
+  /\ t > term[n]
+  /\ LET
+       joinRequest == [method  |-> Join,
+                       request |-> TRUE,
+                       source  |-> n,
+                       dest    |-> nm,
+                       term    |-> t,
+                       csTerm  |-> discoState[n].term,
+                       version |-> discoState[n].version]
+     IN
+       /\ term' = [term EXCEPT ![n] = t]
+       /\ messages' = messages \cup { joinRequest }
+       /\ UNCHANGED <<nextUUID, discoState, appliedState, discoPhase>>
+
 \* node n wants to become master and checks if it has received enough joins (= votes) for its prospective term
 HandleJoinRequestsToBecomeMaster(n) ==
-  /\ discoPhase[n] = Become_Master
+  /\ discoPhase[n] \in {Pinging, Become_Master}
   /\ LET
-       sameTermJoins == { m \in messages : m.method = Join /\ m.request /\ m.dest = n /\ m.term = term[n] }
+       sameTermJoins == { m \in messages : m.method = Join /\ m.request /\ m.dest = n /\ m.term = term[n] /\ (discoState[n].term > m.csTerm \/ (discoState[n].term = m.csTerm /\ discoState[n].term >= m.version)) }
        voteGrantingNodes == { m.source : m \in sameTermJoins }
        newState == [discoState[n] EXCEPT !.master = n, !.nodes = @ \cup voteGrantingNodes, !.term = term[n], !.version = @ + 1, !.data = Append(@, nextUUID)]
        publishRequests == { [method  |-> AppendEntries,
@@ -213,7 +234,7 @@ HandleJoinRequestsToBecomeMaster(n) ==
                              term    |-> term[n],
                              state   |-> newState] : ns \in (newState.nodes \ {n}) }
      IN
-       /\ IsQuorum(voteGrantingNodes \cup {n}, discoState[n].voters) \* +1 as we don't send a join request to ourselves
+       /\ IsQuorum(voteGrantingNodes, appliedState[n].voters)
        /\ discoPhase' = [discoPhase EXCEPT ![n] = Master]
        /\ discoState' = [discoState EXCEPT ![n] = newState]
        /\ nextUUID' = nextUUID + 1
@@ -256,8 +277,8 @@ CommitState(n) ==
                         dest    |-> ns,
                         state   |-> discoState[n]] : ns \in (discoState[n].nodes \ {n}) }
   IN
-    USE Quorum of previous configuration to commit this, not current one
-    /\ IsQuorum(successNodes \cup {n}, discoState[n].voters)  \* +1 as we don't send publish request to ourselves
+    \* USE Quorum of previous configuration to commit this, not current one
+    /\ IsQuorum(successNodes \cup {n}, appliedState[n].voters)  \* +1 as we don't send publish request to ourselves
     /\ messages' = (messages \ publishResponses) \cup applyRequests
     /\ appliedState' = [appliedState EXCEPT ![n] = discoState[n]]
     /\ UNCHANGED <<nextUUID, discoPhase, discoState, term>>
@@ -340,6 +361,7 @@ ChangeVoters(n, vs) ==
 HandleApplyRequest(n, m) ==
   /\ m.method = Apply
   /\ m.request = TRUE
+  /\ discoState[n] = m.state \* we have accepted this as a disco state
   /\ appliedState' = [appliedState EXCEPT ![n] = IF m.state.version > @.version THEN m.state ELSE @]
   /\ Assert(m.state.version > appliedState[n].version => m.state.term >= appliedState[n].term, "seen committed CS with higher version but lower term")
   /\ messages' = messages \ {m}
@@ -380,14 +402,14 @@ HandleResponseWithHigherTerm(n, m) ==
 RestartNode(n) ==
   /\ discoPhase' = [discoPhase EXCEPT ![n] = Pinging]
   /\ discoState' = [discoState EXCEPT ![n] = [@ EXCEPT !.master = Nil, !.nodes = {n}]]
-  /\ appliedState' = [appliedState EXCEPT ![n] = InitialClusterState(n, {})]
+  /\ appliedState' = [appliedState EXCEPT ![n] = [InitialClusterState(n, {}) EXCEPT !.voters = appliedState[n].voters]]
   /\ UNCHANGED <<nextUUID, messages, term>>
 
 \* next-step relation
 Next ==
-  \/ \E n \in Nodes : \E ns \in SUBSET Nodes : ns /= {} /\ n \notin ns /\ SendPingRequest(n, ns)
-  \/ \E m \in messages : HandlePingRequest(m.dest, m)
-  \/ \E n \in Nodes : HandlePingResponses(n)
+  \* \/ \E n \in Nodes : \E ns \in SUBSET Nodes : ns /= {} /\ n \notin ns /\ SendPingRequest(n, ns)
+  \* \/ \E m \in messages : HandlePingRequest(m.dest, m)
+  \* \/ \E n \in Nodes : HandlePingResponses(n)
   \/ \E n \in Nodes : HandleJoinRequestsToBecomeMaster(n)
   \/ \E n \in Nodes : HandleJoinRequestWhenMaster(n)
   \/ \E n \in Nodes : CommitState(n)
@@ -401,6 +423,7 @@ Next ==
   \* \/ \E sm \in SUBSET messages: DropMessagesExcept(sm)
   \/ \E n \in Nodes : RestartNode(n)
   \/ \E n \in Nodes : \E vs \in SUBSET (discoState[n].nodes) : vs /= {} /\ ChangeVoters(n, vs)
+  \/ \E n, nm \in Nodes : SendJoinRequest(n, nm, discoState[n].term + 1)
 
 ----
 
