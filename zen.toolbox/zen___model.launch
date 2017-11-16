@@ -20,30 +20,27 @@
     <stringAttribute key="modelBehaviorNext" value="Next"/>
     <stringAttribute key="modelBehaviorSpec" value=""/>
     <intAttribute key="modelBehaviorSpecType" value="2"/>
-    <stringAttribute key="modelBehaviorVars" value="messages, discoState, appliedState, term, discoPhase, nextUUID"/>
+    <stringAttribute key="modelBehaviorVars" value="lastAcceptedTerm, currentClusterState, messages, firstUncommittedSlot, electionWon, currentTerm, currentConfiguration, currentEra, publishPermitted, lastAcceptedValue"/>
     <stringAttribute key="modelComments" value=""/>
     <booleanAttribute key="modelCorrectnessCheckDeadlock" value="true"/>
     <listAttribute key="modelCorrectnessInvariants">
         <listEntry value="1StateMachineSafety"/>
         <listEntry value="1OneMasterPerTerm"/>
         <listEntry value="1LogMatching"/>
-        <listEntry value="1NodeTermIsHigherThanCSTerm"/>
+        <listEntry value="0Cardinality({n \in Nodes : currentConfiguration[n] /= {n} /\ currentEra[n] &gt; 0 /\ electionWon[n]}) &lt; 1"/>
     </listAttribute>
     <listAttribute key="modelCorrectnessProperties"/>
     <stringAttribute key="modelExpressionEval" value=""/>
     <stringAttribute key="modelParameterActionConstraint" value=""/>
     <listAttribute key="modelParameterConstants">
-        <listEntry value="Follower;;Follower;1;0"/>
-        <listEntry value="Master;;Master;1;0"/>
         <listEntry value="Nodes;;{n1, n2, n3};1;1"/>
         <listEntry value="Nil;;Nil;1;0"/>
         <listEntry value="Apply;;Apply;1;0"/>
-        <listEntry value="AppendEntries;;AppendEntries;1;0"/>
-        <listEntry value="Pinging;;Pinging;1;0"/>
         <listEntry value="Join;;Join;1;0"/>
-        <listEntry value="Become_Master;;Become_Master;1;0"/>
-        <listEntry value="Become_Follower;;Become_Follower;1;0"/>
-        <listEntry value="Ping;;Ping;1;0"/>
+        <listEntry value="Reconfigure;;Reconfigure;1;0"/>
+        <listEntry value="ApplyCSDiff;;ApplyCSDiff;1;0"/>
+        <listEntry value="Values;;{v1, v2, v3};1;1"/>
+        <listEntry value="Publish;;Publish;1;0"/>
     </listAttribute>
     <stringAttribute key="modelParameterContraint" value="StateConstraint"/>
     <listAttribute key="modelParameterDefinitions"/>
