@@ -25,7 +25,7 @@ CONSTANTS Nil
 CONSTANTS
   Join, \* only request is modeled
   Publish,
-  Apply \* only request is modeled
+  Commit \* only request is modeled
 
 \* Replication request types
 CONSTANTS
@@ -100,7 +100,7 @@ HandleStartJoin(n, nm, t) ==
 HandleJoinRequestsToBecomeMaster(n) ==
   LET
     validJoins == { m \in messages : 
-      /\ m.method = Join 
+      /\ m.method = Join
       /\ m.request
       /\ m.dest = n
       /\ m.era = currentEra[n] \* voted for the correct era
@@ -129,7 +129,7 @@ HandleJoinRequestsToBecomeMaster(n) ==
     /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, 
                    firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>> 
 
-\* node n (which is master) instructs other nodes to apply change
+\* node n (which is master) instructs other nodes to commit change
 CommitState(n) ==
   LET
     publishResponses == { m \in messages :
@@ -141,16 +141,16 @@ CommitState(n) ==
                             /\ m.slot = firstUncommittedSlot[n] }
     successResponses == { pr \in publishResponses : pr.success }
     successNodes == { pr.source : pr \in successResponses }
-    applyRequests == { [method  |-> Apply,
-                        request |-> TRUE,
-                        source  |-> n,
-                        dest    |-> ns,
-                        term    |-> currentTerm[n],
-                        era     |-> currentEra[n],
-                        slot    |-> firstUncommittedSlot[n]] : ns \in Nodes }
+    commitRequests == { [method  |-> Commit,
+                         request |-> TRUE,
+                         source  |-> n,
+                         dest    |-> ns,
+                         term    |-> currentTerm[n],
+                         era     |-> currentEra[n],
+                         slot    |-> firstUncommittedSlot[n]] : ns \in Nodes }
   IN
     /\ IsQuorum(successNodes, currentConfiguration[n])
-    /\ messages' = (messages \ publishResponses) \cup applyRequests
+    /\ messages' = (messages \ publishResponses) \cup commitRequests
     /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, electionWon,
                    firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, publishPermitted>>
 
@@ -218,8 +218,8 @@ ChangeVoters(n, vs) ==
                       electionWon, firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>> 
 
 \* apply committed CS to node
-HandleApplyRequest(n, m) ==
-  /\ m.method = Apply
+HandleCommitRequest(n, m) ==
+  /\ m.method = Commit
   /\ m.request = TRUE
   /\ m.slot = firstUncommittedSlot[n]
   /\ lastAcceptedTerm[n] = m.term
@@ -261,7 +261,7 @@ Next ==
   \/ \E n \in Nodes : CommitState(n)
   \/ \E n \in Nodes : \E v \in Values : ClientRequest(n, v)
   \/ \E m \in messages : HandlePublishRequest(m.dest, m)
-  \/ \E m \in messages : HandleApplyRequest(m.dest, m)
+  \/ \E m \in messages : HandleCommitRequest(m.dest, m)
   \/ \E m \in messages : DropMessage(m)
   \/ \E n \in Nodes : RestartNode(n)
   \/ \E n \in Nodes : \E vs \in ValidConfigs : ChangeVoters(n, vs)
