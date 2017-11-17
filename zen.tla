@@ -44,7 +44,6 @@ VARIABLE messages
 \* node state
 VARIABLE firstUncommittedSlot
 VARIABLE currentTerm
-VARIABLE currentEra
 VARIABLE currentConfiguration
 VARIABLE currentClusterState
 VARIABLE lastAcceptedTerm
@@ -67,7 +66,6 @@ ValidConfigs == SUBSET(Nodes) \ {{}}
 Init == /\ messages       = {}
         /\ firstUncommittedSlot = [n \in Nodes |-> 0]
         /\ currentTerm    = [n \in Nodes |-> 0]
-        /\ currentEra     = [n \in Nodes |-> 0]
         /\ currentConfiguration \in {[n \in Nodes |-> vc] : vc \in ValidConfigs} \* all agree on initial config
         /\ currentClusterState \in {[n \in Nodes |-> v] : v \in Values} \* all agree on initial value
         /\ lastAcceptedTerm = [n \in Nodes |-> Nil]
@@ -86,14 +84,13 @@ HandleStartJoin(n, nm, t) ==
                        dest    |-> nm,
                        slot    |-> firstUncommittedSlot[n],
                        term    |-> t,
-                       era     |-> currentEra[n],
                        laTerm  |-> lastAcceptedTerm[n]]
      IN
        /\ currentTerm' = [currentTerm EXCEPT ![n] = t]
        /\ publishPermitted' = [publishPermitted EXCEPT ![n] = TRUE]
        /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
        /\ messages' = messages \cup { joinRequest }
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, 
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, 
                       firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>>
 
 \* node n wants to become master and checks if it has received enough joins (= votes) for its term
@@ -103,23 +100,19 @@ HandleJoinRequestsToBecomeMaster(n, rcvrs) ==
       /\ m.method = Join
       /\ m.request
       /\ m.dest = n
+      /\ m.slot = firstUncommittedSlot[n] \* voted for the correct slot
       /\ m.term = currentTerm[n] \* voted for the correct term
-      /\ \/ /\ m.slot < firstUncommittedSlot[n] \* we have a better committed cluster state
-            /\ m.era = currentEra[n] \* voted for the correct era
-         \/ /\ m.slot = firstUncommittedSlot[n] \* we have the same committed cluster state
-            /\ Assert(currentEra[n] = m.era, "era should be determined by slot")
-            /\ (m.laTerm /= Nil => \* but have a better last accepted state
-                 (lastAcceptedTerm[n] /= Nil /\ m.laTerm <= lastAcceptedTerm[n]))
+      /\ (m.laTerm /= Nil => \* we have a better last accepted state
+           (lastAcceptedTerm[n] /= Nil /\ m.laTerm <= lastAcceptedTerm[n])) 
     }
     voteGrantingNodes == { m.source : m \in validJoins }
-    \* if the voting nodes don't have a value for the next uncommitted slot, we're free to choose any value
-    electionValueForced == { m \in validJoins : m.slot = firstUncommittedSlot[n] /\ m.laTerm /= Nil } /= {}
+    \* if the voting nodes don't have a value for this slot, we're free to choose any value
+    electionValueForced == { m \in validJoins : m.laTerm /= Nil } /= {}
     publishRequests == { [method  |-> Publish,
                           request |-> TRUE,
                           source  |-> n,
                           dest    |-> ns,
                           term    |-> currentTerm[n],
-                          era     |-> currentEra[n],
                           slot    |-> firstUncommittedSlot[n],
                           value   |-> lastAcceptedValue[n]] : ns \in rcvrs }
   IN
@@ -127,7 +120,7 @@ HandleJoinRequestsToBecomeMaster(n, rcvrs) ==
     /\ electionWon' = [electionWon EXCEPT ![n] = TRUE]
     /\ messages' = (messages \ validJoins) \cup (IF electionValueForced THEN publishRequests ELSE {})
     /\ publishPermitted' = [publishPermitted EXCEPT ![n] = \lnot electionValueForced]
-    /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, 
+    /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, 
                    firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>> 
 
 \* node n (which is master) instructs other nodes to commit change
@@ -138,7 +131,6 @@ CommitState(n, rcvrs) ==
                             /\ m.request = FALSE
                             /\ m.dest = n
                             /\ m.term = currentTerm[n]
-                            /\ m.era = currentEra[n]
                             /\ m.slot = firstUncommittedSlot[n] }
     successResponses == { pr \in publishResponses : pr.success }
     successNodes == { pr.source : pr \in successResponses }
@@ -147,12 +139,11 @@ CommitState(n, rcvrs) ==
                          source  |-> n,
                          dest    |-> ns,
                          term    |-> currentTerm[n],
-                         era     |-> currentEra[n],
                          slot    |-> firstUncommittedSlot[n]] : ns \in rcvrs }
   IN
     /\ IsQuorum(successNodes, currentConfiguration[n])
     /\ messages' = (messages \ publishResponses) \cup commitRequests
-    /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, electionWon,
+    /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon,
                    firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, publishPermitted>>
 
 
@@ -165,7 +156,6 @@ ClientRequest(n, v, rcvrs) ==
                              source  |-> n,
                              dest    |-> ns,
                              term    |-> currentTerm[n],
-                             era     |-> currentEra[n],
                              slot    |-> firstUncommittedSlot[n],
                              value   |-> [type |-> ApplyCSDiff, 
                                           val  |-> (currentClusterState[n] :> v)]
@@ -173,7 +163,7 @@ ClientRequest(n, v, rcvrs) ==
      IN
        /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
        /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, electionWon, 
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon, 
                       firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>>
 
 
@@ -182,7 +172,6 @@ HandlePublishRequest(n, m) ==
   /\ m.request = TRUE
   /\ m.slot = firstUncommittedSlot[n]
   /\ currentTerm[n] <= m.term
-  /\ Assert(currentEra[n] = m.era, "era should be determined by slot") \* TODO: not necessary to send era, it is determined by [slot-1] which both sender and receiver agree on
   /\ (lastAcceptedTerm[n] /= Nil => lastAcceptedTerm[n] <= m.term) 
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = m.term]
   /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = m.value]
@@ -193,11 +182,10 @@ HandlePublishRequest(n, m) ==
                     dest    |-> m.source,
                     success |-> TRUE,
                     term    |-> m.term,
-                    era     |-> m.era,
                     slot    |-> m.slot]
      IN
        /\ Reply(response, m)
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, 
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, 
                       electionWon, firstUncommittedSlot, publishPermitted>>
 
 ChangeVoters(n, vs, rcvrs) ==
@@ -209,13 +197,12 @@ ChangeVoters(n, vs, rcvrs) ==
                              source  |-> n,
                              dest    |-> ns,
                              term    |-> currentTerm[n],
-                             era     |-> currentEra[n],
                              slot    |-> firstUncommittedSlot[n],
                              value   |-> [type |-> Reconfigure, val |-> vs]] : ns \in rcvrs }
      IN
        /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
        /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, 
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, 
                       electionWon, firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>> 
 
 \* apply committed CS to node
@@ -224,13 +211,11 @@ HandleCommitRequest(n, m) ==
   /\ m.request = TRUE
   /\ m.slot = firstUncommittedSlot[n]
   /\ lastAcceptedTerm[n] = m.term
-  /\ Assert(currentEra[n] = m.era, "era should be determined by slot") \* TODO: not necessary to send era, it is determined by [slot-1] which both sender and receiver agree on
   /\ firstUncommittedSlot' = [firstUncommittedSlot EXCEPT ![n] = @ + 1]
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = Nil]
   /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = Nil]
   /\ publishPermitted' = [publishPermitted EXCEPT ![n] = TRUE]
   /\ IF lastAcceptedValue[n].type = Reconfigure THEN
-       /\ currentEra' = [currentEra EXCEPT ![n] = @ + 1]
        /\ currentConfiguration' = [currentConfiguration EXCEPT ![n] = lastAcceptedValue[n].val]
        /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
        /\ UNCHANGED <<currentClusterState>>
@@ -238,21 +223,21 @@ HandleCommitRequest(n, m) ==
        /\ Assert(lastAcceptedValue[n].type = ApplyCSDiff, "unexpected type")
        /\ Assert(DOMAIN(lastAcceptedValue[n].val) = {currentClusterState[n]}, "diff mismatch")
        /\ currentClusterState' = [currentClusterState EXCEPT ![n] = lastAcceptedValue[n].val[@]] \* apply diff
-       /\ UNCHANGED <<currentEra, currentConfiguration, electionWon>> 
+       /\ UNCHANGED <<currentConfiguration, electionWon>> 
   /\ messages' = messages \ {m}
   /\ UNCHANGED <<currentTerm>>
 
 \* drop request or response
 DropMessage(m) ==
   /\ messages' = messages \ {m}
-  /\ UNCHANGED <<currentClusterState, currentConfiguration, currentEra, currentTerm, electionWon,
+  /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon,
                  firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, publishPermitted>>
 
 \* crash/restart node n (loses ephemeral state)
 RestartNode(n) ==
   /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
   /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
-  /\ UNCHANGED <<messages, firstUncommittedSlot, currentTerm, currentEra, currentConfiguration, 
+  /\ UNCHANGED <<messages, firstUncommittedSlot, currentTerm, currentConfiguration, 
                  currentClusterState, lastAcceptedTerm, lastAcceptedValue>>
 
 \* next-step relation
@@ -274,17 +259,15 @@ StateMachineSafety ==
   \A n1, n2 \in Nodes :
     firstUncommittedSlot[n1] = firstUncommittedSlot[n2] => 
       /\ currentClusterState[n1] = currentClusterState[n2]
-      /\ currentEra[n1] = currentEra[n2]
 
 OneMasterPerTerm ==
   \A n1, n2 \in Nodes :
     n1 /= n2 /\ electionWon[n1] /\ electionWon[n2] => 
-      currentTerm[n1] /= currentTerm[n2] \/ currentEra[n1] /= currentEra[n2]
+      currentTerm[n1] /= currentTerm[n2] \/ firstUncommittedSlot[n1] /= firstUncommittedSlot[n2]
 
 LogMatching ==
   \A n1, n2 \in Nodes :
     /\ currentTerm[n1] = currentTerm[n2]
-    /\ currentEra[n1] = currentEra[n2]
     /\ firstUncommittedSlot[n1] = firstUncommittedSlot[n2]
     /\ lastAcceptedTerm[n1] = lastAcceptedTerm[n2]
     => lastAcceptedValue[n1] = lastAcceptedValue[n2]
@@ -292,7 +275,6 @@ LogMatching ==
 \* State-exploration limits
 StateConstraint ==
   /\ \A n \in Nodes: currentTerm[n] <= 3
-  /\ \A n \in Nodes: currentEra[n] <= 2
   /\ \A n \in Nodes: firstUncommittedSlot[n] <= 1
   /\ Cardinality(messages) <= 4
 
