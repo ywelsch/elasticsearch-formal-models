@@ -35,12 +35,12 @@
     <listAttribute key="modelParameterConstants">
         <listEntry value="Nodes;;{n1, n2, n3};1;1"/>
         <listEntry value="Nil;;Nil;1;0"/>
-        <listEntry value="Apply;;Apply;1;0"/>
         <listEntry value="Join;;Join;1;0"/>
         <listEntry value="Reconfigure;;Reconfigure;1;0"/>
         <listEntry value="ApplyCSDiff;;ApplyCSDiff;1;0"/>
         <listEntry value="Values;;{v1, v2, v3};1;1"/>
         <listEntry value="Publish;;Publish;1;0"/>
+        <listEntry value="Commit;;Commit;1;0"/>
     </listAttribute>
     <stringAttribute key="modelParameterContraint" value="StateConstraint"/>
     <listAttribute key="modelParameterDefinitions"/>
