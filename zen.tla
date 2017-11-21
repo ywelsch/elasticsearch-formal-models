@@ -24,7 +24,8 @@ CONSTANTS Nil
 \* RPC message types
 CONSTANTS
   Join, \* only request is modeled
-  Publish,
+  PublishRequest,
+  PublishResponse,
   Commit, \* only request is modeled
   Catchup \* only response is modeled
 
@@ -56,11 +57,8 @@ VARIABLE publishPermitted
 
 ----
 
-\* Remove request from the set of messages and add response instead
-Reply(response, request) == messages' = {response} \cup (messages \ {request})
-
-\* quorums correspond to majority of nodes
-IsQuorum(ns, voters) == Cardinality(ns \cap voters) * 2 > Cardinality(voters)
+\* quorums correspond to majority of votes in a config
+IsQuorum(votes, config) == Cardinality(votes \cap config) * 2 > Cardinality(config)
 
 \* set of valid configurations (i.e. all non-empty subsets of Nodes)
 ValidConfigs == SUBSET(Nodes) \ {{}}
@@ -115,15 +113,14 @@ HandleJoinRequest(n, m, rcvrs) ==
   /\ electionValueForced' = [electionValueForced EXCEPT ![n] = @ \/ (m.laTerm /= Nil /\ m.slot = firstUncommittedSlot[n])]
   /\ electionWon' = [electionWon EXCEPT ![n] = IsQuorum(joinVotes'[n], currentConfiguration[n])]
   /\ IF electionValueForced'[n] /\ electionWon'[n] /\ \lnot electionWon[n]
-     THEN LET publishRequests == { [method  |-> Publish,
-                                    request |-> TRUE,
+     THEN LET publishRequests == { [method  |-> PublishRequest,
                                     source  |-> n,
                                     dest    |-> ns,
                                     term    |-> currentTerm[n],
                                     slot    |-> firstUncommittedSlot[n],
                                     value   |-> lastAcceptedValue[n]] : ns \in rcvrs }
      IN
-       /\ messages' = (messages \ {m}) \cup (IF electionValueForced'[n] /\ electionWon'[n] /\ \lnot electionWon[n] THEN publishRequests ELSE {})
+       /\ messages' = (messages \ {m}) \cup publishRequests
        /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
      ELSE
        /\ messages' = (messages \ {m})
@@ -131,12 +128,68 @@ HandleJoinRequest(n, m, rcvrs) ==
   /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm,
                  firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>>
 
+\* client causes a cluster state change v
+ClientRequest(n, v, rcvrs) ==
+  /\ electionWon[n]
+  /\ publishPermitted[n]
+  /\ electionValueForced[n] = FALSE
+  /\ LET
+       publishRequests == { [method  |-> PublishRequest,
+                             source  |-> n,
+                             dest    |-> ns,
+                             term    |-> currentTerm[n],
+                             slot    |-> firstUncommittedSlot[n],
+                             value   |-> [type |-> ApplyCSDiff, 
+                                          val  |-> (currentClusterState[n] :> v)]
+                            ] : ns \in rcvrs }
+     IN
+       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
+       /\ messages' = messages \cup publishRequests
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon, electionValueForced,
+                      firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes>>
+
+\* change the set of voters
+ChangeVoters(n, vs, rcvrs) ==
+  /\ electionWon[n]
+  /\ publishPermitted[n]
+  /\ electionValueForced[n] = FALSE
+  /\ LET
+       publishRequests == { [method  |-> PublishRequest,
+                             source  |-> n,
+                             dest    |-> ns,
+                             term    |-> currentTerm[n],
+                             slot    |-> firstUncommittedSlot[n],
+                             value   |-> [type |-> Reconfigure, val |-> vs]] : ns \in rcvrs }
+     IN
+       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
+       /\ messages' = messages \cup publishRequests
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionValueForced,
+                      electionWon, firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes>>
+
+\* handle publish request m on node n
+HandlePublishRequest(n, m) ==
+  /\ m.method = PublishRequest
+  /\ m.slot = firstUncommittedSlot[n]
+  /\ m.term = currentTerm[n]
+  /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = m.term]
+  /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = m.value]
+  /\ LET
+       response == [method  |-> PublishResponse,
+                    source  |-> n,
+                    dest    |-> m.source,
+                    success |-> TRUE,
+                    term    |-> m.term,
+                    slot    |-> m.slot]
+     IN
+       /\ messages' = (messages \ {m}) \cup {response}
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionValueForced,
+                      electionWon, firstUncommittedSlot, publishPermitted, joinVotes>>
+
 \* node n (which is master) instructs other nodes to commit change
 CommitState(n, rcvrs) ==
   LET
     publishResponses == { m \in messages :
-                            /\ m.method = Publish
-                            /\ m.request = FALSE
+                            /\ m.method = PublishResponse
                             /\ m.dest = n
                             /\ m.term = currentTerm[n]
                             /\ m.slot = firstUncommittedSlot[n] }
@@ -153,67 +206,7 @@ CommitState(n, rcvrs) ==
     /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon, electionValueForced,
                    firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, publishPermitted, joinVotes>>
 
-
-ClientRequest(n, v, rcvrs) ==
-  /\ electionWon[n]
-  /\ publishPermitted[n]
-  /\ electionValueForced[n] = FALSE
-  /\ LET
-       publishRequests == { [request |-> TRUE,
-                             method  |-> Publish,
-                             source  |-> n,
-                             dest    |-> ns,
-                             term    |-> currentTerm[n],
-                             slot    |-> firstUncommittedSlot[n],
-                             value   |-> [type |-> ApplyCSDiff, 
-                                          val  |-> (currentClusterState[n] :> v)]
-                            ] : ns \in rcvrs }
-     IN
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
-       /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon, electionValueForced,
-                      firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes>>
-
-
-HandlePublishRequest(n, m) ==
-  /\ m.method = Publish
-  /\ m.request = TRUE
-  /\ m.slot = firstUncommittedSlot[n]
-  /\ m.term = currentTerm[n]
-  /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = m.term]
-  /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = m.value]
-  /\ LET
-       response == [method  |-> Publish,
-                    request |-> FALSE,
-                    source  |-> n,
-                    dest    |-> m.source,
-                    success |-> TRUE,
-                    term    |-> m.term,
-                    slot    |-> m.slot]
-     IN
-       /\ Reply(response, m)
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionValueForced,
-                      electionWon, firstUncommittedSlot, publishPermitted, joinVotes>>
-
-ChangeVoters(n, vs, rcvrs) ==
-  /\ electionWon[n]
-  /\ publishPermitted[n]
-  /\ electionValueForced[n] = FALSE
-  /\ LET
-       publishRequests == { [request |-> TRUE,
-                             method  |-> Publish,
-                             source  |-> n,
-                             dest    |-> ns,
-                             term    |-> currentTerm[n],
-                             slot    |-> firstUncommittedSlot[n],
-                             value   |-> [type |-> Reconfigure, val |-> vs]] : ns \in rcvrs }
-     IN
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
-       /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionValueForced,
-                      electionWon, firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes>> 
-
-\* apply committed CS to node
+\* apply committed CS / config to node n
 HandleCommitRequest(n, m) ==
   /\ m.method = Commit
   /\ m.slot = firstUncommittedSlot[n]
@@ -235,7 +228,7 @@ HandleCommitRequest(n, m) ==
   /\ messages' = messages \ {m}
   /\ UNCHANGED <<currentTerm, joinVotes>>
 
-\* node n captures current state and sends a catch up message (giving other nodes a chance to catchup)
+\* node n captures current state and sends a catch up message (giving other nodes a chance to catchup with the current state)
 SendCatchupResponse(n) ==
   /\ LET
        catchupMessage == [method  |-> Catchup,
@@ -301,7 +294,7 @@ StateMachineSafety ==
       /\ currentClusterState[n1] = currentClusterState[n2]
       /\ currentConfiguration[n1] = currentConfiguration[n2]
 
-OneMasterPerTerm ==
+OneMasterPerTermPerConfig ==
   \A n1, n2 \in Nodes :
     n1 /= n2 /\ electionWon[n1] /\ electionWon[n2] => 
       \/ currentTerm[n1] /= currentTerm[n2] 
