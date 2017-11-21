@@ -225,7 +225,7 @@ HandleCommitRequest(n, m) ==
   /\ electionValueForced' = [electionValueForced EXCEPT ![n] = FALSE]
   /\ IF lastAcceptedValue[n].type = Reconfigure THEN
        /\ currentConfiguration' = [currentConfiguration EXCEPT ![n] = lastAcceptedValue[n].val]
-       /\ electionWon' = [electionWon EXCEPT ![n] = @ /\ IsQuorum(joinVotes[n], currentConfiguration'[n])]
+       /\ electionWon' = [electionWon EXCEPT ![n] = IsQuorum(joinVotes[n], currentConfiguration'[n])]
        /\ UNCHANGED <<currentClusterState>>
      ELSE
        /\ Assert(lastAcceptedValue[n].type = ApplyCSDiff, "unexpected type")
@@ -239,7 +239,6 @@ HandleCommitRequest(n, m) ==
 SendCatchupResponse(n) ==
   /\ LET
        catchupMessage == [method  |-> Catchup,
-                          term    |-> currentTerm[n],
                           slot    |-> firstUncommittedSlot[n],
                           config  |-> currentConfiguration[n],
                           state   |-> currentClusterState[n]]
@@ -251,7 +250,6 @@ SendCatchupResponse(n) ==
 \* node n handles a catchup message
 HandleCatchupResponse(n, m) ==
   /\ m.method = Catchup
-  /\ m.term = currentTerm[n]
   /\ m.slot > firstUncommittedSlot[n]
   /\ firstUncommittedSlot' = [firstUncommittedSlot EXCEPT ![n] = m.slot]
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = Nil]
