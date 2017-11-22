@@ -25,7 +25,7 @@
     <booleanAttribute key="modelCorrectnessCheckDeadlock" value="true"/>
     <listAttribute key="modelCorrectnessInvariants">
         <listEntry value="1StateMachineSafety"/>
-        <listEntry value="1OneMasterPerTermPerConfig"/>
+        <listEntry value="1OneMasterPerTerm"/>
         <listEntry value="1LogMatching"/>
     </listAttribute>
     <listAttribute key="modelCorrectnessProperties"/>

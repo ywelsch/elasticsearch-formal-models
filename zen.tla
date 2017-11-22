@@ -60,6 +60,11 @@ VARIABLE publishPermitted
 \* quorums correspond to majority of votes in a config
 IsQuorum(votes, config) == Cardinality(votes \cap config) * 2 > Cardinality(config)
 
+\* checks if all the quorums of two configs are intersecting
+IntersectingQuorums(config1, config2) ==
+  /\ \lnot IsQuorum(config1 \ config2, config1)
+  /\ \lnot IsQuorum(config2 \ config1, config2)
+
 \* set of valid configurations (i.e. all non-empty subsets of Nodes)
 ValidConfigs == SUBSET(Nodes) \ {{}}
 
@@ -294,11 +299,13 @@ StateMachineSafety ==
       /\ currentClusterState[n1] = currentClusterState[n2]
       /\ currentConfiguration[n1] = currentConfiguration[n2]
 
-OneMasterPerTermPerConfig ==
+OneMasterPerTerm ==
   \A n1, n2 \in Nodes :
-    n1 /= n2 /\ electionWon[n1] /\ electionWon[n2] => 
-      \/ currentTerm[n1] /= currentTerm[n2] 
-      \/ currentConfiguration[n1] /= currentConfiguration[n2]
+    /\ electionWon[n1]
+    /\ electionWon[n2]
+    /\ currentTerm[n1] = currentTerm[n2]
+    /\ IntersectingQuorums(currentConfiguration[n1], currentConfiguration[n2])
+    => n1 = n2
 
 LogMatching ==
   \A n1, n2 \in Nodes :
