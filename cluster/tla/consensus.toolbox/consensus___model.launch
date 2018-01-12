@@ -20,7 +20,7 @@
     <stringAttribute key="modelBehaviorNext" value="Next"/>
     <stringAttribute key="modelBehaviorSpec" value=""/>
     <intAttribute key="modelBehaviorSpecType" value="2"/>
-    <stringAttribute key="modelBehaviorVars" value="lastAcceptedTerm, currentClusterState, messages, firstUncommittedSlot, electionWon, publishVotes, allowElection, currentTerm, currentConfiguration, joinVotes, publishPermitted, lastAcceptedValue"/>
+    <stringAttribute key="modelBehaviorVars" value="lastAcceptedTerm, currentClusterState, messages, firstUncommittedSlot, mode, publishVotes, currentTerm, currentConfiguration, joinVotes, lastAcceptedValue"/>
     <stringAttribute key="modelComments" value=""/>
     <booleanAttribute key="modelCorrectnessCheckDeadlock" value="true"/>
     <listAttribute key="modelCorrectnessInvariants">
@@ -46,6 +46,11 @@
         <listEntry value="Catchup;;Catchup;1;0"/>
         <listEntry value="PublishResponse;;PublishResponse;1;0"/>
         <listEntry value="PublishRequest;;PublishRequest;1;0"/>
+        <listEntry value="Follower;;Follower;1;0"/>
+        <listEntry value="Candidate;;Candidate;1;0"/>
+        <listEntry value="Passive;;Passive;1;0"/>
+        <listEntry value="FreeLeader;;FreeLeader;1;0"/>
+        <listEntry value="BusyLeader;;BusyLeader;1;0"/>
     </listAttribute>
     <stringAttribute key="modelParameterContraint" value="StateConstraint"/>
     <listAttribute key="modelParameterDefinitions"/>

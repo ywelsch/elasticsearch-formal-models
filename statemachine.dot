@@ -1,0 +1,11 @@
+digraph NodeModes {
+    Passive -> Candidate [label=HandleStartJoin];
+    Candidate -> FreeLeader [label=HandleJoinRequest];
+    Candidate -> BusyLeader [label=HandleJoinRequest];
+    FreeLeader -> BusyLeader [label=ClientRequest];
+    Candidate -> Follower [label=HandlePublishRequest];
+    BusyLeader -> FreeLeader [label=HandleCommitRequest];
+    {Candidate FreeLeader BusyLeader Follower} -> Passive [label=RestartNode, color=gray, constraint=false];
+
+    { rank=same; FreeLeader BusyLeader }
+}

@@ -34,6 +34,14 @@ CONSTANTS
   Reconfigure,
   ApplyCSDiff  
 
+\* Node modes
+CONSTANTS
+  Passive,
+  Candidate,
+  FreeLeader,
+  BusyLeader,
+  Follower
+
 ----
 
 \* `^\Large\bf Variables ^'
@@ -44,6 +52,7 @@ CONSTANTS
 VARIABLE messages
 
 \* node state (map from node id to state)
+VARIABLE mode
 VARIABLE firstUncommittedSlot
 VARIABLE currentTerm
 VARIABLE currentConfiguration
@@ -51,9 +60,6 @@ VARIABLE currentClusterState
 VARIABLE lastAcceptedTerm
 VARIABLE lastAcceptedValue
 VARIABLE joinVotes
-VARIABLE allowElection
-VARIABLE electionWon
-VARIABLE publishPermitted
 VARIABLE publishVotes
 
 ----
@@ -82,9 +88,7 @@ Init == /\ messages = {}
         /\ lastAcceptedTerm = [n \in Nodes |-> Nil]
         /\ lastAcceptedValue = [n \in Nodes |-> Nil]
         /\ joinVotes = [n \in Nodes |-> {}]
-        /\ allowElection = [n \in Nodes |-> FALSE]
-        /\ electionWon = [n \in Nodes |-> FALSE]
-        /\ publishPermitted = [n \in Nodes |-> FALSE]
+        /\ mode = [n \in Nodes |-> Passive]
         /\ publishVotes = [n \in Nodes |-> {}]
 
 \* Send join request from node n to node nm for term t
@@ -99,9 +103,7 @@ HandleStartJoin(n, nm, t) ==
                        laTerm  |-> lastAcceptedTerm[n]]
      IN
        /\ currentTerm' = [currentTerm EXCEPT ![n] = t]
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = TRUE]
-       /\ allowElection' = [allowElection EXCEPT ![n] = TRUE]
-       /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
+       /\ mode' = [mode EXCEPT ![n] = Candidate]
        /\ joinVotes' = [joinVotes EXCEPT ![n] = {}]
        /\ publishVotes' = [publishVotes EXCEPT ![n] = {}]
        /\ messages' = messages \cup { joinRequest }
@@ -113,32 +115,32 @@ HandleStartJoin(n, nm, t) ==
 HandleJoinRequest(n, m) ==
   /\ m.method = Join
   /\ m.term = currentTerm[n]
-  /\ allowElection[n]
+  /\ mode[n] \in { Candidate, FreeLeader, BusyLeader }
   /\ \/ /\ m.slot < firstUncommittedSlot[n]
      \/ /\ m.slot = firstUncommittedSlot[n]
         /\ (m.laTerm /= Nil => lastAcceptedTerm[n] /= Nil /\ m.laTerm <= lastAcceptedTerm[n])
   /\ joinVotes' = [joinVotes EXCEPT ![n] = @ \cup { m.source }]
-  /\ electionWon' = [electionWon EXCEPT ![n] = ElectionWon(n, joinVotes'[n])]
-  /\ IF electionWon'[n] /\ publishPermitted[n] /\ lastAcceptedTerm[n] /= Nil 
-     THEN LET publishRequests == { [method  |-> PublishRequest,
+  /\ LET becomeLeader == ElectionWon(n, joinVotes'[n]) /\ \lnot ElectionWon(n, joinVotes[n])
+     IN
+       IF becomeLeader /\ lastAcceptedTerm[n] /= Nil THEN
+         LET publishRequests == { [method  |-> PublishRequest,
                                     source  |-> n,
                                     dest    |-> ns,
                                     term    |-> currentTerm[n],
                                     slot    |-> firstUncommittedSlot[n],
                                     value   |-> lastAcceptedValue[n]] : ns \in Nodes }
-     IN
-       /\ messages' = messages \cup publishRequests
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
-     ELSE
-       /\ UNCHANGED <<messages, publishPermitted>>
-  /\ Assert(electionWon'[n] /\ \lnot electionWon[n] => publishPermitted[n], "publishing permitted when winning election")
+         IN
+           /\ mode' = [mode EXCEPT ![n] = BusyLeader]
+           /\ messages' = messages \cup publishRequests
+       ELSE
+         /\ mode' = [mode EXCEPT ![n] = IF becomeLeader THEN FreeLeader ELSE @]
+         /\ UNCHANGED <<messages>>
   /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, publishVotes,
-                 firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, allowElection>>
+                 firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm>>
 
 \* client causes a cluster state change v
 ClientRequest(n, v) ==
-  /\ electionWon[n]
-  /\ publishPermitted[n]
+  /\ mode[n] = FreeLeader
   /\ LET
        publishRequests == { [method  |-> PublishRequest,
                              source  |-> n,
@@ -149,15 +151,14 @@ ClientRequest(n, v) ==
                                           val  |-> (currentClusterState[n] :> v)]
                             ] : ns \in Nodes }
      IN
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
+       /\ mode' = [mode EXCEPT ![n] = BusyLeader]
        /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, allowElection, electionWon,
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm,
                       firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes, publishVotes>>
 
 \* change the set of voters
 ChangeVoters(n, vs) ==
-  /\ electionWon[n]
-  /\ publishPermitted[n]
+  /\ mode[n] = FreeLeader
   /\ IsQuorum(joinVotes[n], vs)
   /\ LET
        publishRequests == { [method  |-> PublishRequest,
@@ -167,9 +168,9 @@ ChangeVoters(n, vs) ==
                              slot    |-> firstUncommittedSlot[n],
                              value   |-> [type |-> Reconfigure, val |-> vs]] : ns \in Nodes }
      IN
-       /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
+       /\ mode' = [mode EXCEPT ![n] = BusyLeader]
        /\ messages' = messages \cup publishRequests
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, allowElection, electionWon,
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm,
                       firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, joinVotes, publishVotes>>
 
 \* handle publish request m on node n
@@ -179,6 +180,7 @@ HandlePublishRequest(n, m) ==
   /\ m.term = currentTerm[n]
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = m.term]
   /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = m.value]
+  /\ mode' = [mode EXCEPT ![n] = IF @ = Candidate THEN Follower ELSE @]
   /\ LET
        response == [method  |-> PublishResponse,
                     source  |-> n,
@@ -188,8 +190,8 @@ HandlePublishRequest(n, m) ==
                     slot    |-> m.slot]
      IN
        /\ messages' = messages \cup {response}
-       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, allowElection,
-                      electionWon, firstUncommittedSlot, publishPermitted, joinVotes, publishVotes>>
+       /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm,
+                      firstUncommittedSlot, joinVotes, publishVotes>>
 
 \* node n commits a change
 HandlePublishResponse(n, m) ==
@@ -209,9 +211,8 @@ HandlePublishResponse(n, m) ==
          /\ messages' = messages \cup commitRequests
      ELSE
        UNCHANGED <<messages>>
-  /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, electionWon,
-                   firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, allowElection,
-                   publishPermitted, joinVotes>>
+  /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, joinVotes,
+                   firstUncommittedSlot, lastAcceptedValue, lastAcceptedTerm, mode>>
 
 \* apply committed change to node n
 HandleCommitRequest(n, m) ==
@@ -222,8 +223,8 @@ HandleCommitRequest(n, m) ==
   /\ firstUncommittedSlot' = [firstUncommittedSlot EXCEPT ![n] = @ + 1]
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = Nil]
   /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = Nil]
-  /\ publishPermitted' = [publishPermitted EXCEPT ![n] = TRUE]
   /\ publishVotes' = [publishVotes EXCEPT ![n] = {}]
+  /\ mode' = [mode EXCEPT ![n] = IF @ = BusyLeader THEN FreeLeader ELSE @]
   /\ IF lastAcceptedValue[n].type = Reconfigure THEN
        /\ currentConfiguration' = [currentConfiguration EXCEPT ![n] = lastAcceptedValue[n].val]
        /\ UNCHANGED <<currentClusterState>>
@@ -232,7 +233,7 @@ HandleCommitRequest(n, m) ==
        /\ Assert(DOMAIN(lastAcceptedValue[n].val) = {currentClusterState[n]}, "diff mismatch")
        /\ currentClusterState' = [currentClusterState EXCEPT ![n] = lastAcceptedValue[n].val[@]] \* apply diff
        /\ UNCHANGED <<currentConfiguration>>
-  /\ UNCHANGED <<currentTerm, joinVotes, messages, electionWon, allowElection>>
+  /\ UNCHANGED <<currentTerm, joinVotes, messages>>
 
 \* node n captures current state and sends a catch up message
 SendCatchupResponse(n) ==
@@ -244,30 +245,27 @@ SendCatchupResponse(n) ==
      IN
        /\ messages' = messages \cup { catchupMessage }
        /\ UNCHANGED <<currentClusterState, currentConfiguration, currentTerm, 
-                      lastAcceptedValue, electionWon, firstUncommittedSlot, publishPermitted,
-                      joinVotes, lastAcceptedTerm, publishVotes, allowElection>>
+                      lastAcceptedValue, firstUncommittedSlot,
+                      joinVotes, lastAcceptedTerm, publishVotes, mode>>
 
 \* node n handles a catchup message
 HandleCatchupResponse(n, m) ==
   /\ m.method = Catchup
   /\ m.slot > firstUncommittedSlot[n]
+  /\ mode[n] \notin { FreeLeader, BusyLeader }
   /\ firstUncommittedSlot' = [firstUncommittedSlot EXCEPT ![n] = m.slot]
   /\ lastAcceptedTerm' = [lastAcceptedTerm EXCEPT ![n] = Nil]
   /\ lastAcceptedValue' = [lastAcceptedValue EXCEPT ![n] = Nil]
-  /\ publishPermitted' = [publishPermitted EXCEPT ![n] = TRUE]
-  /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
   /\ currentConfiguration' = [currentConfiguration EXCEPT ![n] = m.config]
   /\ currentClusterState' = [currentClusterState EXCEPT ![n] = m.state]
   /\ joinVotes' = [joinVotes EXCEPT ![n] = {}]
   /\ publishVotes' = [publishVotes EXCEPT ![n] = {}]
-  /\ UNCHANGED <<currentTerm, messages, allowElection>>
+  /\ UNCHANGED <<currentTerm, messages, mode>>
   
 
 \* crash/restart node n (loses ephemeral state)
 RestartNode(n) ==
-  /\ allowElection' = [allowElection EXCEPT ![n] = FALSE]
-  /\ electionWon' = [electionWon EXCEPT ![n] = FALSE]
-  /\ publishPermitted' = [publishPermitted EXCEPT ![n] = FALSE]
+  /\ mode' = [mode EXCEPT ![n] = Passive]
   /\ joinVotes' = [joinVotes EXCEPT ![n] = {}]
   /\ publishVotes' = [publishVotes EXCEPT ![n] = {}]
   /\ UNCHANGED <<messages, firstUncommittedSlot, currentTerm, currentConfiguration, 
@@ -297,8 +295,8 @@ StateMachineSafety ==
 
 OneMasterPerTerm ==
   \A n1, n2 \in Nodes :
-    /\ electionWon[n1]
-    /\ electionWon[n2]
+    /\ mode[n1] = FreeLeader \/ mode[n1] = BusyLeader
+    /\ mode[n2] = FreeLeader \/ mode[n2] = BusyLeader
     /\ currentTerm[n1] = currentTerm[n2]
     => n1 = n2
 
@@ -312,9 +310,8 @@ SingleNodeInvariant ==
   \A n \in Nodes :
     /\ (lastAcceptedTerm[n] = Nil) = (lastAcceptedValue[n] = Nil)
     /\ lastAcceptedTerm[n] /= Nil => (lastAcceptedTerm[n] <= currentTerm[n])
-    /\ (electionWon[n] => allowElection[n])
-    /\ electionWon[n] = ElectionWon(n, joinVotes[n]) \* cached value is consistent
-    /\ electionWon[n] /\ publishPermitted[n] => lastAcceptedValue[n] = Nil
+    /\ (mode[n] = FreeLeader \/ mode[n] = BusyLeader) = ElectionWon(n, joinVotes[n]) \* cached value is consistent
+    /\ mode[n] = FreeLeader => lastAcceptedValue[n] = Nil
 
 LogMatchingMessages ==
   \A m1, m2 \in messages:
