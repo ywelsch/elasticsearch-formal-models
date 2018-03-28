@@ -101,9 +101,7 @@ HandleJoinRequest(n, m) ==
   /\ electionWon' = [electionWon EXCEPT ![n] = ElectionWon(n, joinVotes'[n])]
   /\ IF electionWon[n] = FALSE /\ electionWon'[n]
      THEN
-       /\ Assert(publishInstance[n] = 0, "unexpected publish instance")
-       /\ Assert(publishVotes[n] = {}, "unexpected publish votes")
-       \* moving publish instance up to last accepted instance to enable client requests, which is safe
+       \* initiating publish instance with last accepted instance to enable client requests
        /\ publishInstance' = [publishInstance EXCEPT ![n] = lastAcceptedInstance[n]]
      ELSE
        UNCHANGED <<publishInstance>>
@@ -226,6 +224,9 @@ SingleNodeInvariant ==
   \A n \in Nodes :
     /\ lastAcceptedTerm[n] <= currentTerm[n]
     /\ electionWon[n] = ElectionWon(n, joinVotes[n]) \* cached value is consistent
+    /\ IF electionWon[n] THEN publishInstance[n] >= lastAcceptedInstance[n] ELSE publishInstance[n] = 0
+    /\ electionWon[n] => allowElection[n]
+    /\ publishVotes[n] /= {} => electionWon[n]
 
 OneMasterPerTerm ==
   \A n1, n2 \in Nodes :
