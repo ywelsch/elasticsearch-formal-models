@@ -40,6 +40,8 @@ VARIABLE publishVotes
 
 ----
 
+Terms == Nat
+
 \* set of valid configurations (i.e. the set of all non-empty subsets of Nodes)
 ValidConfigs == SUBSET(Nodes) \ {{}}
 
@@ -208,7 +210,7 @@ RestartNode(n) ==
 
 \* next-step relation
 Next ==
-  \/ \E n, nm \in Nodes : HandleStartJoin(n, nm, currentTerm[n] + 1)
+  \/ \E n, nm \in Nodes : \E t \in Terms : HandleStartJoin(n, nm, t)
   \/ \E m \in messages : HandleJoinRequest(m.dest, m)
   \/ \E n \in Nodes : \E v \in Values : \E vs \in ValidConfigs : ClientRequest(n, v, vs)
   \/ \E m \in messages : HandlePublishRequest(m.dest, m)
@@ -299,7 +301,6 @@ CommittedValueDirectlyBasedOnCommittedValue ==
 
 \* State-exploration limits
 StateConstraint ==
-  /\ \A n \in Nodes: currentTerm[n] <= 2
   /\ \A n \in Nodes: publishInstance[n] <= 2
   /\ Cardinality(messages) <= 15
 
