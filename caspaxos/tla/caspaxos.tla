@@ -158,7 +158,9 @@ HandlePublishRequest(n, m) ==
                     source   |-> n,
                     dest     |-> m.source,
                     term     |-> m.term,
-                    instance |-> m.instance]
+                    instance |-> m.instance,
+                    config   |-> m.config,
+                    currConf |-> m.currConf]
      IN
        /\ messages' = messages \cup {response}
        /\ UNCHANGED <<allowElection, currentTerm, descendant,
@@ -170,7 +172,9 @@ HandlePublishResponse(n, m) ==
   /\ m.term = currentTerm[n]
   /\ m.instance = publishInstance[n]
   /\ publishVotes' = [publishVotes EXCEPT ![n] = @ \cup {m.source}]
-  /\ IF IsQuorum(publishVotes'[n], currentConfiguration[n])
+  /\ IF
+       /\ IsQuorum(publishVotes'[n], m.config)
+       /\ IsQuorum(publishVotes'[n], m.currConf)
      THEN
        LET
          commitRequests == { [method   |-> Commit,
@@ -311,7 +315,8 @@ CommittedValueDirectlyBasedOnCommittedValue ==
 
 \* State-exploration limits
 StateConstraint ==
-  /\ \A n \in Nodes: publishInstance[n] <= 2
+  /\ \A n \in Nodes: currentTerm[n] <= 1 => publishInstance[n] <= 2
+  /\ \A n \in Nodes: publishInstance[n] <= 3
   /\ Cardinality(messages) <= 15
 
 ====================================================================================================
