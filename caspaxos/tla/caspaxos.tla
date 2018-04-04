@@ -269,8 +269,8 @@ CommittedPublishRequest(mp) ==
 
 DescendantRelationIsStrictlyOrdered ==
   /\ \A d \in descendant:
-       \/ d.prevT < d.nextT
-       \/ d.prevT = d.nextT /\ d.prevI < d.nextI
+       /\ d.prevT <= d.nextT
+       /\ d.prevI < d.nextI
   \* relation is transitive
   /\ \A d1, d2 \in descendant:
        d1.nextT = d2.prevT /\ d1.nextI = d2.prevI 
@@ -280,9 +280,8 @@ NewerOpsBasedOnOlderCommittedOps ==
   \A m1, m2 \in messages :
       /\ CommittedPublishRequest(m1)
       /\ m2.method = PublishRequest
-      /\ \/ m2.term > m1.term
-         \/ /\ m2.term = m1.term
-            /\ m2.instance > m1.instance
+      /\ m2.term >= m1.term
+      /\ m2.instance > m1.instance
       => [prevT |-> m1.term, prevI |-> m1.instance, nextT |-> m2.term, nextI |-> m2.instance] \in descendant
 
 \* main invariant:
